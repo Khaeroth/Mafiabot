@@ -32,7 +32,7 @@ pip install -r requirements.txt
 
 3. Configura el bot:
 
-   * Crea un archivo `.env` o similar con tu token de bot de Discord.
+   * Crea un archivo `.env` o similar con tu token de bot de Discord en la raiz de la carpeta del bot.
    * Asegúrate de que el bot tiene permisos adecuados en el servidor (leer mensajes, enviar mensajes, administrar canales/roles si usas bloqueo).
 4. Inicia el bot:
 
