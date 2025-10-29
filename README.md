@@ -1,6 +1,6 @@
 # MafiaBot
 
-```markdown
+
 🕵️‍♂️ **MafiaBot** es un bot para Pycord que permite gestionar partidas tipo *Mafia / Werewolf* en servidores de Discord.  
 Incluye votaciones ponderadas, gestión de roles, fases día/noche, relojes de zona horaria y herramientas útiles para moderación de partidas.
 
