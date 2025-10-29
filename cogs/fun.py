@@ -124,7 +124,7 @@ class EventosRandom(commands.Cog):
     # ✅ Comando para activar/desactivar
     # ------------------------------
     @discord.slash_command(description="(MOD) Activa o desactiva los eventos aleatorios del canal de votación.")
-    @commands.has_permissions(administrator=True)
+    @discord.default_permissions(administrator=True)
     async def toggle_tourette(self, ctx):
         datos = cargar_json(config_file)
         server_id = str(ctx.guild.id)
@@ -150,3 +150,4 @@ class EventosRandom(commands.Cog):
     
 def setup(bot):
     bot.add_cog(EventosRandom(bot))
+
