@@ -428,6 +428,11 @@ class Votaciones(commands.Cog):
         datos = cargar_json(config_file)
         server_id = str(ctx.guild.id)
 
+        try:
+            del datos[server_id]["votos_fin_dia"]
+        except:
+            pass
+
         if server_id in datos and "votos" in datos[server_id]:
             del datos[server_id]["votos"]
             guardar_json(config_file, datos)
@@ -458,6 +463,7 @@ class Votaciones(commands.Cog):
             return
 
         votos = datos[server_id].get("votos", {})
+        votos_fin_dia = datos[server_id].get("votos_fin_dia", {})
 
         # --- Calcular total ponderado de jugadores ---
         jugadores = [m for m in ctx.guild.members if rol_jugador in m.roles]
@@ -465,7 +471,7 @@ class Votaciones(commands.Cog):
         cantidad_vivos = len(jugadores)
         base = (cantidad_vivos // 2) + 1  # mayoría simple
 
-        if not votos:
+        if not votos and not votos_fin_dia:
             await ctx.respond(
                 f"🗳️ No hay votos registrados todavía.\n"
                 f"📌 Para cerrar la votación con **{cantidad_vivos} jugadores vivos** se necesitan **{base} votos**.",
@@ -505,9 +511,43 @@ class Votaciones(commands.Cog):
 
             palabra = "voto" if total_ponderado_recibido == 1 else "votos"
             mensaje += (
-                f"**{nombre_votado}** ({total_ponderado_recibido} {palabra} de {needed} votos necesarios.): "
+                f"- **{nombre_votado}** ({total_ponderado_recibido} {palabra} de {needed} votos necesarios.): "
                 f"{', '.join(lista_votantes)}\n"
             )
+        ##############################################################################################################
+
+        # --- Mostrar votos para terminar el día antes ---
+        votos_fin_dia = datos[server_id].get("votos_fin_dia", {})
+
+        # Filtrar solo jugadores vivos
+        votantes_fin_dia_validos = [
+            ctx.guild.get_member(int(v_id))
+            for v_id in votos_fin_dia.keys()
+            if ctx.guild.get_member(int(v_id)) in jugadores
+        ]
+
+        cantidad_fin_dia = len(votantes_fin_dia_validos)
+        faltan = max(0, base - cantidad_fin_dia)
+
+        # Construir lista de nombres
+        nombres_fin_dia = []
+        for miembro in votantes_fin_dia_validos:
+            nombres_fin_dia.append(miembro.display_name)
+
+        mensaje += "\n\n⏳ **Votos para terminar el día antes:**\n"
+        if cantidad_fin_dia < base:
+            palabra = "voto" if cantidad_fin_dia == 1 else "votos"
+            mensaje += f"Se necesitan **{faltan} {palabra} más** para cerrar el día anticipadamente.\n\n"
+        else:
+            mensaje += f"🟩 **¡Se alcanzó el mínimo de {base} votos!** El día puede finalizar anticipadamente.\n\n"
+
+        if cantidad_fin_dia == 0:
+            mensaje += "- **Nadie** ha votado aún para finalizar el día anticipadamente.\n"
+        else:
+            mensaje += f"- **Votos:** {cantidad_fin_dia} ({', '.join(nombres_fin_dia)})\n"
+
+        
+
 
         await ctx.followup.send(mensaje)
 
@@ -911,6 +951,7 @@ class Votaciones(commands.Cog):
         embed.add_field(
             name="👥 Gestión de jugadores",
             value=(
+                "`/lista_de_jugadores ` — Muestra un listado de los jugadores vivos y muertos.\n"
                 "`/set_valor_voto_jugador @jugador peso` — Cambia cuánto vale el voto del jugador.\n"
                 "`/set_vida_jugador @jugador offset` — Cambia cuántos votos necesita para ser linchado.\n"
                 "`/status_jugadores` — Muestra todos los jugadores, valor de los votos y 'vidas' configuradas.\n"
@@ -953,12 +994,12 @@ class Votaciones(commands.Cog):
             name=":crown: Módulo de Moderación",
             value=(
                 "¡Has instalado el módulo de moderación! Con esto puedes utilizar un par de comandos para tareas administrativas.\n"
-                "`/anunciar` - Envía un mensaje al `canal de juego` configurado usando el bot. Puedes usarlo para dar avisos *anónimos* a los jugadores.\n"
-                "`/borrar_mensajes` - Borra una cantidad de mensajes recientes del canal actual (máximo 100). \n"
-                "`/cuenta_atras_iniciar` - Inicia una cuenta regresiva que enviará un aviso cuando termine el tiempo. Puede usarse para anunciar el tiempo que durará un día, o noche. Solo puede haber una cuenta regresiva a la vez.\n"
-                "`/cuenta_atras_status` - Muestra cuánto tiempo falta para que termine la cuenta regresiva actual.\n"
-                "`/cuenta_atras_cancelar` - Cancela la cuenta regresiva activa, si existe.\n"
-                "`/ping` - Comprueba si el bot está respondiendo correctamente.\n"
+                "- `/anunciar` - Envía un mensaje al `canal de juego` configurado usando el bot. Puedes usarlo para dar avisos *anónimos* a los jugadores.\n"
+                "- `/borrar_mensajes` - Borra una cantidad de mensajes recientes del canal actual (máximo 100). \n"
+                "- `/cuenta_atras_iniciar` - Inicia una cuenta regresiva que enviará un aviso cuando termine el tiempo. Puede usarse para anunciar el tiempo que durará un día, o noche. Solo puede haber una cuenta regresiva a la vez.\n"
+                "- `/cuenta_atras_status` - Muestra cuánto tiempo falta para que termine la cuenta regresiva actual.\n"
+                "- `/cuenta_atras_cancelar` - Cancela la cuenta regresiva activa, si existe.\n"
+                "- `/ping` - Comprueba si el bot está respondiendo correctamente.\n"
             ),
             inline=False
         )
@@ -976,6 +1017,55 @@ class Votaciones(commands.Cog):
                 "- Hay un comando de `/ruleta` para elegir a un jugador al azar de entre los jugadores vivos.\n"
                 "- Hay un comando de `/choose` para elegir al azar una de las opciones ofrecidas.\n"
                 "- Solo los administradores pueden ver y usar los comandos que dicen `(MOD)` en la descripción."
+            ),
+            inline=False
+        )
+
+        await ctx.respond(embed=embed, ephemeral=False)
+        pass
+
+    @discord.slash_command(description="(MOD) Listado de comandos que pueden usar los jugadores..")
+    @discord.default_permissions(administrator=True)
+    async def comandos_jugadores(self, ctx):
+        
+        embed = discord.Embed(
+            title="🧾 Comandos para jugadores",
+            description="Puedes usar los siguientes comandos:.",
+            color=discord.Color.gold()
+        )
+        embed.set_author(name="MafiaBot", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+        #embed.set_footer(text="Desarrollado por Khaeroth (https://github.com/Khaeroth)")
+
+        # --- Votaciones ---
+        embed.add_field(
+            name=":ballot_box: Votaciones",
+            value=(
+                "`/votar @jugador` — Vota por alguien para que sea linchado. \n"
+                "`/votar_terminar_dia_antes` — En caso de que no deseas linchar a nadie, puedes votar para que termine el día antes. Este voto no se puede quitar hasta que finalice el día, piénsalo bien.\n"
+                "`/quitar_voto` — Usa este comando si quieres quitar tu voto hacia un jugado. Este comando NO elimina el voto para terminar el día. \n"
+                "`/status_votos` — Muestra cuántos votos van para linchar a un jugador. \n"
+            ),
+            inline=False
+        )
+
+        # --- Gameplay ---
+        embed.add_field(
+            name="🧩 Gameplay",
+            value=(
+                "`/accion` — Usa este comando para informar que usarás una habilidad. Si no actuarás durante la noche, envía también una acción diciendo 'No actuaré'. \n"
+                "`/dado` — Rueda un dado de entre 2 y 100 caras. Si no se coloca cuantas caras, se usarán 6 por defecto. \n"
+                "`/ruleta` — Rueda una ruleta para elegir a un jugador dentro de un rol en específico. \n"
+                "`/choose` — El bot eligirá por ti una opción de entre las que coloques separadas por espacios. \n"
+            ),
+            inline=False
+        )
+
+        # --- Información ---
+        embed.add_field(
+            name=":information_source: Información",
+            value=(
+                "`/cuenta_atras_status` — Puedes ver cuánto tiempo falta para que termine el contador actual (si es que hay uno activo). \n"
+                "`/lista_de_jugadores` — Muestra un listado de los jugadores vivos y muertos.\n"
             ),
             inline=False
         )
