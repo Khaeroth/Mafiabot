@@ -125,6 +125,42 @@ reset_config
   ```
 * `db_canales.json`: Registro de servidores, canales de voz y zonas horarias para módulo “Reloj Mundial”.
 
+## Opcional
+
+Ejemplo de Dockerfile:
+
+```
+# Usa una imagen base de Python
+FROM python:3.12
+
+# Configura el directorio de trabajo
+WORKDIR /app
+
+# Copia los archivos del repositorio al contenedor
+COPY . .
+
+# Instala dependencias
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Comando para ejecutar el bot
+CMD ["python", "MafiaBot.py"]
+```
+
+Ejemplo de docker-compose.yml:
+
+```
+version: "3.9"
+services:
+  mafiabot:
+    build: .
+    container_name: mafiabot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    command: python MafiaBot.py
+```
+
 ## 🧩 Contribuciones
 
 Las contribuciones son bienvenidas. Puedes abrir un *pull request* o *issue* para mejoras o reportar bugs.
