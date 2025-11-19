@@ -73,7 +73,7 @@ class EventosRandom(commands.Cog):
                 print(f"⚠️ Error al enviar mensaje: {e}")
 
         # --- Evento aleatorio con 1% ---
-        if random.randint(1, 100) == 1:
+        if random.randint(1, 75) == 1:
             palabras = ultimo_msg.content.split()
             if not palabras:
                 return
@@ -104,14 +104,17 @@ class EventosRandom(commands.Cog):
                 print(f"⚠️ Error al enviar mensaje: {e}")
 
         # --- Segundo evento aleatorio con 1% ---
-        if random.randint(1, 100) == 1:
+        if random.randint(1, 99) == 1:
             frases = [
                 "Linchen a Hyde",
                 "Envenenen a Mirto",
                 "Maquillaron a Lazo!",
                 "LA CEBOLLA :speaking_head:",
                 "Basado :moyai:",
-                "Primarca :moyai:"
+                "Primarca :moyai:",
+		        "A Lian le huelen las patas",
+		        "Vicky es... ** AAAHH** :thunder_cloud_rain:",
+		        "Respeto tu privacidad votando, pero reafirmo mi autoridad matándote en la noche de todos modos :thumbsup:"
             ]
             try:
                 await message.channel.send(f":zany_face: > {random.choice(frases)}")
@@ -150,4 +153,3 @@ class EventosRandom(commands.Cog):
     
 def setup(bot):
     bot.add_cog(EventosRandom(bot))
-

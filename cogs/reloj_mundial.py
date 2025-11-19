@@ -13,7 +13,7 @@ db_canales = "json/db_canales.json"
 class RelojMundial(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.actualizar_horas.start()
+        #self.actualizar_horas.start()
 
     def registrar_zona(self, servidor_id, pais, canal_id, zona_horaria):
         """Agrega un país con su canal y zona al servidor dado. 
