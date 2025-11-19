@@ -169,5 +169,3 @@ Por favor, antes de contribuir, abre una sugerencia para acordar la dirección d
 ## 📄 Licencia
 
 Este proyecto está licenciado bajo la [MIT License](LICENSE) — puedes redistribuirlo y modificarlo según los términos de la licencia.
-
-```
