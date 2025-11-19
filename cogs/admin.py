@@ -14,31 +14,34 @@ class Admin(commands.Cog):
         self.bot = bot
         self.cuentas_atras = {}
 
-    @discord.slash_command(description="(MOD) Envía un mensaje al canal de juego en nombre del bot.")
+    @discord.slash_command(description='(MOD) Envía un mensaje "anónimo" en nombre del bot.')
     @discord.default_permissions(administrator=True)
-    @option("mensaje", str, description="El mensaje que deseas enviar en el canal de juego.")
-    async def anunciar(self, ctx, mensaje: str):
-        """Permite a un moderador enviar un mensaje al canal de juego usando el bot."""
+    @option("mensaje", str, description="El mensaje que deseas enviar.")
+    @option("canal", discord.TextChannel, description="Canal donde deseas enviar el mensaje (opcional).", required=False)
+    async def anunciar(self, ctx, mensaje: str, canal: discord.TextChannel = None):
+        """Permite a un moderador enviar un mensaje a un canal específico o al canal de juego por defecto."""
         datos = cargar_json(config_file)
         server_id = str(ctx.guild.id)
 
+        # Si NO se eligió canal, usar el canal por defecto configurado
         # Verificar que haya un canal de juego configurado
-        if server_id not in datos or "canal_juego" not in datos[server_id]:
-            await ctx.respond("⚠️ No hay ningún canal de juego configurado.", ephemeral=True)
-            return
+        if canal is None:
+            if server_id not in datos or "canal_juego" not in datos[server_id]:
+                await ctx.respond("⚠️ No hay un canal de juego configurado.", ephemeral=True)
+                return
 
-        canal_id = datos[server_id]["canal_juego"]
-        canal_juego = ctx.guild.get_channel(canal_id)
+            canal_id = datos[server_id]["canal_juego"]
+            canal = ctx.guild.get_channel(canal_id)
 
-        if not canal_juego:
-            await ctx.respond("⚠️ El canal de juego configurado ya no existe.", ephemeral=True)
-            return
+            if not canal:
+                await ctx.respond("⚠️ El canal de juego configurado ya no existe.", ephemeral=True)
+                return
 
         # Enviar el mensaje como el bot
-        await canal_juego.send(mensaje)
+        await canal.send(mensaje)
 
         # Confirmar al moderador que el mensaje fue enviado
-        await ctx.respond(f"✅ Mensaje enviado correctamente a {canal_juego.mention}.", ephemeral=True)
+        await ctx.respond(f"✅ Mensaje enviado correctamente a {canal.mention}.", ephemeral=True)
 
 
     # --- Comando para borrar mensajes del canal ---

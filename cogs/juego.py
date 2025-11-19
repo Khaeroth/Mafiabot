@@ -99,10 +99,10 @@ class Votaciones(commands.Cog):
         await ctx.respond(f"💀 Rol de **muertos** registrado: **{rol.name}**")
 
 
-    @discord.slash_command(description='(MOD) Configura el "peso" del voto a un jugador. 1 = normal, 2 = doble, 3 = triple, etc.')
+    @discord.slash_command(description='(MOD) Configura el "peso" del voto a un jugador. 0= no puede votar, 1 = normal, 2 = doble, etc.')
     @discord.default_permissions(administrator=True)
     @option("usuario", description="Usuario al que asignar peso", type=discord.Member)
-    @option("peso", description="Valor numérico (ej: 1, 2). Usa 1 para restablecer a 1 o 0 para eliminar.", required=True)
+    @option("peso", description="Valor numérico. 0 = no puede votar, 1 = normal, 2+ = voto mejorado.", required=True)
     async def set_valor_voto_jugador(self, ctx, usuario: discord.Member, peso: int):
         datos = cargar_json(config_file)
         server_id = str(ctx.guild.id)
@@ -110,18 +110,34 @@ class Votaciones(commands.Cog):
         datos[server_id].setdefault("weights", {})
 
         key = _user_key(usuario.id)
-        if peso <= 1:
-        # eliminar/restablecer a 1
+
+        # --- CASO: peso 0 (no puede votar) ---
+        if peso == 0:
+            datos[server_id]["weights"][key] = 0
+            guardar_json(config_file, datos)
+            await ctx.respond(f"⛔ {usuario.display_name} **no podrá votar** (peso 0 asignado).")
+            return
+
+        # --- CASO: peso 1 (volver a normal) ---
+        if peso == 1:
+            # eliminar peso personalizado
             if key in datos[server_id]["weights"]:
                 del datos[server_id]["weights"][key]
                 guardar_json(config_file, datos)
-                await ctx.respond(f"🔁 Peso de {usuario.display_name} restablecido/eliminado (ahora es 1).", ephemeral=False)
+                await ctx.respond(f"🔁 Peso de {usuario.display_name} restablecido a **1** (normal).")
             else:
-                await ctx.respond("ℹ️ No había peso personalizado para ese usuario.", ephemeral=True)
-        else:
+                await ctx.respond("ℹ️ Ese usuario ya tenía el peso normal (1).", ephemeral=True)
+            return
+
+        # --- CASO: peso 2+ ---
+        if peso > 1:
             datos[server_id]["weights"][key] = int(peso)
             guardar_json(config_file, datos)
-            await ctx.respond(f"✅ Ahora el voto de {usuario.display_name} vale por **{peso}**.", ephemeral=False)
+            await ctx.respond(f"✅ Ahora el voto de {usuario.display_name} vale por **{peso}**.")
+            return
+
+        # --- Si ponen valores negativos ---
+        await ctx.respond("❌ El peso no puede ser negativo. Usa 0 para deshabilitar el voto.", ephemeral=True)
 
 
     @discord.slash_command(description="(MOD) Edita los votos que necesita un jugador para ser linchado. Ej: -2, -1, 0, 1, 2.")
@@ -207,36 +223,53 @@ class Votaciones(commands.Cog):
         if "votos" not in datos[server_id]:
             datos[server_id]["votos"] = {}
 
+        # --- Validar peso del votante (bloqueo si su peso = 0) ---
+        votante_key = _user_key(ctx.author.id)
+        peso_votante = datos[server_id].get("weights", {}).get(votante_key, 1)
+
+        if peso_votante == 0:
+            await ctx.respond(
+                "⛔ No puedes votar.", ephemeral=False)
+            return
+        
+        # Registrar por quién votó el usuario
         datos[server_id]["votos"][str(ctx.author.id)] = str(jugador.id)
         guardar_json(config_file, datos)
 
         await ctx.respond(f"🗳️ Has votado por **{jugador.display_name}**.", ephemeral=False)
 
-        # --- Verificar mayoría usando votos ponderados ---
+        # --- Verificar mayoría simple ---
         jugadores = [m for m in ctx.guild.members if rol_jugador in m.roles]
 
-        # Calcular el total ponderado posible (la suma de pesos de todos los jugadores)
-        total_ponderado = 0
-        for j in jugadores:
-            total_ponderado += obtener_peso_votante(j, datos, server_id)
+        num_jugadores = len(jugadores)
+        base = (num_jugadores // 2) + 1  # mayoría simple real
 
-        base = (total_ponderado // 2) + 1  # mayoría absoluta ponderada
-
-        conteo = {}  # votado_id -> total ponderado recibido
+        # --- Contar votos ponderados ---
+        conteo = {}
         votos = datos[server_id].get("votos", {})
+
         for votante_id, votado_id in votos.items():
             votante_member = ctx.guild.get_member(int(votante_id))
+
+            #Obtener peso
             peso = obtener_peso_votante(votante_member, datos, server_id) if votante_member else 1
+
             conteo[votado_id] = conteo.get(votado_id, 0) + peso
 
-        # Comprobar thresholds offset y decidir ganador
+        # --- Revisar si alguien alcanzó mayoría + threshold ---
         ganador_id = None
         ganador_total = 0
         ganador_needed = 0
+
         for votado_id, total_votes in conteo.items():
             votado_member = ctx.guild.get_member(int(votado_id))
+
+            # Threshold individual (puede ser -2, -1, 0, +1, +2, etc.)
             offset = obtener_threshold_offset(votado_member, datos, server_id) if votado_member else 0
+            # Ajustar mayoría según threshold
+
             needed = max(1, base + offset)
+
             if total_votes >= needed:
                 ganador_id = votado_id
                 ganador_total = total_votes
@@ -245,9 +278,11 @@ class Votaciones(commands.Cog):
 
         if ganador_id:
             ganador = ctx.guild.get_member(int(ganador_id))
-            overwrite = canal_juego.overwrites_for(ctx.guild.default_role)
+            #overwrite = canal_juego.overwrites_for(ctx.guild.default_role)
+            overwrite = canal_juego.overwrites_for(rol_jugador)
             overwrite.send_messages = False
-            await canal_juego.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+            #await canal_juego.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+            await canal_juego.set_permissions(rol_jugador, overwrite=overwrite)
 
             # Cambiar rol de jugador cuando sea linchado.
             if "rol_muerto" in datos[server_id]:
@@ -262,9 +297,80 @@ class Votaciones(commands.Cog):
                     #await canal_juego.send(f":fire: :farmer: **{nombre}** ha alcanzado la mayoría ({ganador_total} ≥ {ganador_needed}).\n🔒 El canal ha sido bloqueado.")
                     await canal_juego.send(f":fire: :farmer: **{nombre}** ha alcanzado la mayoría de votos.")
                     await canal_juego.send(f"💀 **{ganador.display_name}** ha sido linchado y ahora está muerto. \n\n:city_sunset: El día ha terminado.")
-
+            
             guardar_json(config_file, datos)
             return
+
+    @discord.slash_command(description="Vota para terminar el día antes. Si votas, no lo podrás retirar hasta terminar el día.")
+    async def votar_terminar_dia_antes(self, ctx):
+
+        datos = cargar_json(config_file)
+        server_id = str(ctx.guild.id)
+
+        # Verificar config básica
+        if server_id not in datos or "rol_jugador" not in datos[server_id]:
+            return await ctx.respond("⚠️ No hay rol de jugadores configurado.", ephemeral=True)
+
+        if "canal_juego" not in datos[server_id]:
+            return await ctx.respond("⚠️ No se ha configurado el canal de juego.", ephemeral=True)
+
+        # Canal válido
+        canal_juego_id = datos[server_id]["canal_juego"]
+        if ctx.channel.id != canal_juego_id:
+            return await ctx.respond("🚫 Solo puedes votar en el canal de juego.", ephemeral=True)
+
+        rol_jugador = ctx.guild.get_role(datos[server_id]["rol_jugador"])
+        rol_muerto = ctx.guild.get_role(datos[server_id]["rol_muerto"])
+
+        # Solo vivos pueden votar para terminar el día
+        if rol_jugador not in ctx.author.roles:
+            return await ctx.respond("🚫 Solo los jugadores vivos pueden votar para terminar el día.", ephemeral=True)
+
+        # Obtener o crear estructura
+        datos.setdefault(server_id, {})
+        datos[server_id].setdefault("votos_fin_dia", {})
+
+        votos_fin = datos[server_id]["votos_fin_dia"]
+
+        # Registrar voto
+        votos_fin[str(ctx.author.id)] = True
+        guardar_json(config_file, datos)
+
+        # Calcular mayoría simple (solo vivos)
+        jugadores_vivos = [m for m in ctx.guild.members if rol_jugador in m.roles]
+        total_vivos = len(jugadores_vivos)
+        needed = (total_vivos // 2) + 1
+
+        total_votos = len(votos_fin)
+
+        await ctx.respond(
+            f"🗳️ **{ctx.author.display_name}** ha votado para terminar el día.\n"
+            f"Votos: **{total_votos}/{needed}**"
+        )
+
+        # ¿Se alcanzó la mayoría?
+        if total_votos >= needed:
+            canal_juego = ctx.guild.get_channel(canal_juego_id)
+
+            # Bloquear el canal
+            rol_everyone = ctx.guild.default_role  # @everyone
+            roles_a_bloquear = [rol_everyone, rol_jugador, rol_muerto]
+
+            for rol in roles_a_bloquear:
+                if rol:
+                    overwrite = canal_juego.overwrites_for(rol)
+                    overwrite.send_messages = False
+                    await canal_juego.set_permissions(rol, overwrite=overwrite)
+
+            await canal_juego.send(
+                f"🌅 **La mayoría ha votado para terminar el día ({total_votos}/{needed}).**\n"
+                f"🔒 El canal ha sido bloqueado.\n"
+                f"☀️ Termina el día."
+            )
+
+            # Reset votos
+            datos[server_id]["votos_fin_dia"] = {}
+            guardar_json(config_file, datos)
 
 
     @discord.slash_command(description="Retira tu voto para linchar.")
@@ -353,18 +459,18 @@ class Votaciones(commands.Cog):
 
         votos = datos[server_id].get("votos", {})
 
-        if not votos:
-            await ctx.respond("🗳️ No hay votos registrados todavía.", ephemeral=False)
-            return
-
         # --- Calcular total ponderado de jugadores ---
         jugadores = [m for m in ctx.guild.members if rol_jugador in m.roles]
+        
+        cantidad_vivos = len(jugadores)
+        base = (cantidad_vivos // 2) + 1  # mayoría simple
 
-        total_ponderado = 0
-        for j in jugadores:
-            total_ponderado += obtener_peso_votante(j, datos, server_id)
-
-        base = (total_ponderado // 2) + 1  # mayoría absoluta ponderada
+        if not votos:
+            await ctx.respond(
+                f"🗳️ No hay votos registrados todavía.\n"
+                f"📌 Para cerrar la votación con **{cantidad_vivos} jugadores vivos** se necesitan **{base} votos**.",
+                ephemeral=False)
+            return
 
         # --- Invertir votos y calcular totales ponderados ---
         conteo = {}  # votado_id -> lista de (votante_id, peso)
@@ -374,7 +480,7 @@ class Votaciones(commands.Cog):
             conteo.setdefault(votado_id, []).append((votante_id, peso))
 
         mensaje = "📊 **Estado actual de la votación:**\n"
-        mensaje += f"Se necesitan **{base} votos** para cerrar la votación.\n\n"
+        mensaje += f"Con **{cantidad_vivos} jugadores vivos** se necesitan **{base} votos** para cerrar la votación.\n\n"
 
         # --- Mostrar cada jugador votado ---
         for votado_id, votantes in sorted(conteo.items(), key=lambda x: sum(p for _, p in x[1]), reverse=True):
@@ -405,82 +511,69 @@ class Votaciones(commands.Cog):
 
         await ctx.followup.send(mensaje)
 
-
     @discord.slash_command(description="(MOD) Muestra todos los jugadores con su peso de voto y threshold, incluyendo muertos.")
     @discord.default_permissions(administrator=True)
     async def status_jugadores(self, ctx):
-        """Muestra todos los jugadores (vivos, muertos o ausentes) con su peso y threshold."""
+        """Muestra todos los jugadores con su peso y threshold."""
         datos = cargar_json(config_file)
         server_id = str(ctx.guild.id)
 
-        if server_id not in datos or "rol_jugador" not in datos[server_id]:
-            await ctx.respond("⚠️ No se ha configurado el rol de jugador en este servidor.", ephemeral=True)
-            return
+        server_data = datos.setdefault(server_id, {})
+        server_data.setdefault("weights", {})
+        server_data.setdefault("thresholds", {})
 
-        rol_id = datos[server_id]["rol_jugador"]
-        rol_jugador = ctx.guild.get_role(rol_id)
-        if not rol_jugador:
-            await ctx.respond("⚠️ El rol de jugador configurado ya no existe.", ephemeral=True)
-            return
+        pesos = server_data["weights"]
+        thresholds = server_data["thresholds"]
 
-        # --- Obtener todos los jugadores vivos (rol actual) ---
-        jugadores_vivos = [m for m in ctx.guild.members if rol_jugador in m.roles]
+        # Obtener roles desde el JSON
+        rol_vivo_id = server_data.get("rol_jugador")
+        rol_muerto_id = server_data.get("rol_muerto")
 
-        # --- Obtener datos guardados del JSON ---
-        weights = datos[server_id].get("weights", {})
-        thresholds = datos[server_id].get("thresholds", {})
+        if not rol_vivo_id and not rol_muerto_id:
+            return await ctx.respond("⚠️ No hay roles de vivo/muerto configurados.", ephemeral=True)
 
-        mensaje = "📋 **Estado de los jugadores:**\n\n"
+        rol_vivo = ctx.guild.get_role(rol_vivo_id) if rol_vivo_id else None
+        rol_muerto = ctx.guild.get_role(rol_muerto_id) if rol_muerto_id else None
 
-        # --- Combinar jugadores del JSON y del servidor ---
-        jugadores_ids = set()
-        jugadores_ids.update(int(k.replace("user_", "")) for k in weights.keys())
-        jugadores_ids.update(int(k.replace("user_", "")) for k in thresholds.keys())
+        vivos = rol_vivo.members if rol_vivo else []
+        muertos = rol_muerto.members if rol_muerto else []
 
-        # Agregar también jugadores vivos que no estén en el JSON
-        jugadores_ids.update([m.id for m in jugadores_vivos])
+        # Construcción de filas
+        filas = []
 
-        # --- Construir lista ---
-        for jugador_id in sorted(jugadores_ids):
-            miembro = ctx.guild.get_member(jugador_id)
-            clave = f"user_{jugador_id}"
+        # Encabezado de la tabla
+        filas.append(f"{'Estado':<8} | {'Jugador':<20} | {'Peso':<4} | {'Threshold':<9}")
+        filas.append("-" * 50)
 
-            # Valores por defecto
-            peso = weights.get(clave, 1)
-            offset = thresholds.get(clave, 0)
+        # Función de acceso seguro
+        def obtener(uid, dicc, default):
+            return dicc.get(uid, default)
 
-            # Normalizar tipos
-            try:
-                peso = int(peso)
-                if peso < 1:
-                    peso = 1
-            except:
-                peso = 1
+        # Agregar vivos primero
+        for m in vivos:
+            uid = _user_key(m.id)
+            peso = obtener(uid, pesos, 1)
+            th = obtener(uid, thresholds, 0)
 
-            try:
-                offset = int(offset)
-            except:
-                offset = 0
+            filas.append(f"{'Vivo':<8} | {m.display_name:<20} | {peso:<4} | {th:<9}")
 
-            # Signo del threshold
-            signo = f"{offset:+d}"  # Esto garantiza que se muestre el signo (+ o -)
+        # Luego muertos
+        for m in muertos:
+            uid = _user_key(m.id)
+            peso = obtener(uid, pesos, 1)
+            th = obtener(uid, thresholds, 0)
 
-            # Estado del jugador
-            if miembro:
-                nombre = miembro.display_name
-                if rol_jugador in miembro.roles:
-                    estado_icono = "🟢"
-                else:
-                    estado_icono = "💀"
-            else:
-                nombre = f"(ID: {jugador_id})"
-                estado_icono = "🕸️"
+            filas.append(f"{'Muerto':<8} | {m.display_name:<20} | {peso:<4} | {th:<9}")
 
-            mensaje += f"{estado_icono} **{nombre}** → 🏋️ Peso: `{peso}` | 🎯 Threshold: `{signo}`\n"
+        tabla = "```\n" + "\n".join(filas) + "\n```"
 
-        mensaje += f"\n👥 Total registrados: {len(jugadores_ids)}"
-        await ctx.respond(mensaje, ephemeral=False)
+        embed = discord.Embed(
+            title="📊 Estado de los jugadores",
+            description=tabla,
+            color=discord.Color.dark_blue()
+        )
 
+        await ctx.respond(embed=embed)
 
 
     @discord.slash_command(description="Muestra todos los jugadores vivos y muertos.")
@@ -488,13 +581,11 @@ class Votaciones(commands.Cog):
         datos = cargar_json(config_file)
         server_id = str(ctx.guild.id)
 
-        # Verificar que existan los roles configurados
         if server_id not in datos:
             await ctx.respond("⚠️ No se ha configurado este servidor en la base de datos.", ephemeral=True)
             return
 
         def obtener_rol(nombre_campo: str, descripcion: str):
-            """Devuelve el rol configurado o responde con error."""
             if nombre_campo not in datos[server_id]:
                 raise ValueError(f"⚠️ No se ha configurado el rol de {descripcion}.")
             rol = ctx.guild.get_role(datos[server_id][nombre_campo])
@@ -503,44 +594,43 @@ class Votaciones(commands.Cog):
             return rol
 
         try:
-            rol_jugador = obtener_rol("rol_jugador", "jugador")
+            rol_vivo = obtener_rol("rol_jugador", "jugador")
             rol_muerto = obtener_rol("rol_muerto", "muerto")
         except ValueError as e:
             await ctx.respond(str(e), ephemeral=True)
             return
 
-        # Clasificar los miembros del servidor
-        vivos = []
-        muertos = []
-        for miembro in ctx.guild.members:
-            if rol_muerto in miembro.roles:
-                muertos.append(miembro)
-            elif rol_jugador in miembro.roles:
-                vivos.append(miembro)
+        # Clasificar miembros
+        vivos = sorted([m for m in ctx.guild.members if rol_vivo in m.roles], key=lambda x: x.display_name.lower())
+        muertos = sorted([m for m in ctx.guild.members if rol_muerto in m.roles], key=lambda x: x.display_name.lower())
 
-        # Construir los mensajes
         if not vivos and not muertos:
-            await ctx.respond("ℹ️ No hay jugadores registrados con los roles configurados.", ephemeral=True)
-            return
+            return await ctx.respond("ℹ️ No hay jugadores registrados con los roles configurados.", ephemeral=True)
 
-        mensaje = "## Lista de jugadores vivos: ##\n"
-        if vivos:
-            mensaje += "\n".join(f"- **{m.display_name}**" for m in sorted(vivos, key=lambda x: x.display_name.lower()))
-        else:
-            mensaje += "- Nadie 😢"
+        # TABLA
+        filas = []
+        filas.append(f"{'Estado':<7}   | {'Jugador':<20}")
+        filas.append("-" * 32)
 
-        mensaje += f"\n\n👥 Total jugadores vivos: {len(vivos)}\n\n\n"
-        mensaje += "## Lista de jugadores muertos: ## \n"
+        for m in vivos:
+            filas.append(f"🟢 Vivo   | {m.display_name:<20}")
 
-        if muertos:
-            mensaje += "\n".join(f"- **{m.display_name}**" for m in sorted(muertos, key=lambda x: x.display_name.lower()))
-        else:
-            mensaje += "- Nadie 👻"
+        for m in muertos:
+            filas.append(f"⚫ Muerto | {m.display_name:<20}")
 
-        mensaje += f"\n\n:skull: Total fiambres: {len(muertos)}"
+        tabla = "```\n" + "\n".join(filas) + "\n```"
 
-        await ctx.respond(mensaje, ephemeral=False)
+        embed = discord.Embed(
+            title="📋 Lista de Jugadores",
+            description=(
+                f"**Vivos:** {len(vivos)}\n"
+                f"**Fiambres:** {len(muertos)}\n\n"
+                f"{tabla}"
+            ),
+            color=discord.Color.teal()
+        )
 
+        await ctx.respond(embed=embed)
 
 
     @discord.slash_command(description="(MOD) Muestra los canales y roles actualmente configurados (acciones, votaciones, jugador, muerto).")
@@ -562,24 +652,44 @@ class Votaciones(commands.Cog):
         rol_jugador = ctx.guild.get_role(cfg.get("rol_jugador"))
         rol_muerto = ctx.guild.get_role(cfg.get("rol_muerto"))
 
-        # Armar respuesta con menciones o avisos
-        def fmt(item, tipo):
-            if item:
-                return f"{item.mention} (`{item.id}`)"
-            else:
-                #return f"⚠️ *No configurado* ({tipo})"
-                return f"⚠️ *No configurado*"
+        # Formateador
+        def fmt(item):
+            return item.mention if item else "⠀⚠️ *No configurado*"
 
-        mensaje = (
-            "🧾 **Configuración actual del servidor:**\n\n"
-            f"• 🎯 **Canal de acciones:** {fmt(canal_acciones, 'canal')}\n"
-            f"• 🗳️ **Canal de juego:** {fmt(canal_juego, 'canal')}\n"
-            f"• 🧍 **Rol de jugadores:** {fmt(rol_jugador, 'rol')}\n"
-            f"• 💀 **Rol de muertos:** {fmt(rol_muerto, 'rol')}\n"
+        # Crear embed
+        embed = discord.Embed(
+            title="🧾 Configuración del Servidor",
+            description="Estado actual de los canales y roles configurados.",
+            color=discord.Color.blue()
         )
 
-        await ctx.respond(mensaje, ephemeral=False)
+        embed.add_field(
+            name="🎯 Canal de acciones",
+            value=f"⠀⠀⠀{fmt(canal_acciones)}",
+            inline=False
+        )
 
+        embed.add_field(
+            name="🗳️ Canal de juego",
+            value=f"⠀⠀⠀{fmt(canal_juego)}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="🧍 Rol de jugadores",
+            value=f"⠀⠀⠀{fmt(rol_jugador)}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="💀 Rol de muertos",
+            value=f"⠀⠀⠀{fmt(rol_muerto)}",
+            inline=False
+        )
+
+        embed.set_footer(text=f"Servidor: {ctx.guild.name}")
+
+        await ctx.respond(embed=embed, ephemeral=False)
 
     # ----------------------------------------------------------
     # Iniciar día (bloquea canal + limpia votos si es para terminar el día)
@@ -603,14 +713,25 @@ class Votaciones(commands.Cog):
         canal_juego_id = datos[server_id]["canal_juego"]
         canal_juego = ctx.guild.get_channel(canal_juego_id)
 
+        if "rol_jugador" not in datos[server_id]:
+            await ctx.respond("⚠️ No se ha registrado un rol de jugador.", ephemeral=True)
+            return
+
+        rol_jugadores_id = datos[server_id].get("rol_jugador")
+        rol_jugadores = ctx.guild.get_role(rol_jugadores_id)
+
+
         if not canal_juego:
             await ctx.respond("⚠️ El canal de juego configurado ya no existe.", ephemeral=True)
             return
 
         # --- Limpiar votos ---
+        datos[server_id]["votos_fin_dia"] = {}
+
         if "votos" in datos[server_id]:
             datos[server_id]["votos"] = {}
-            guardar_json(config_file, datos)
+        
+        guardar_json(config_file, datos)
         
 
         if fase == "dia":
@@ -619,9 +740,10 @@ class Votaciones(commands.Cog):
             await canal_juego.send(":sunrise_over_mountains: **Ha iniciado un nuevo día.** Pueden usar sus habilidades diurnas.")
 
             # --- Desbloquear canal ---
-            overwrite = canal_juego.overwrites_for(ctx.guild.default_role)
-            overwrite.send_messages = True
-            await canal_juego.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+            #overwrite = canal_juego.overwrites_for(rol_jugadores)
+            #overwrite.send_messages = True
+            #await canal_juego.set_permissions(rol_jugadores, overwrite=overwrite)
+            await canal_juego.set_permissions(rol_jugadores, send_messages=True)
 
         elif fase == "noche":
             await canal_juego.send(":night_with_stars: **Ha iniciado una nueva noche.** Pueden usar sus habilidades nocturnas.")
@@ -646,15 +768,22 @@ class Votaciones(commands.Cog):
         if not canal_juego:
             await ctx.respond("⚠️ El canal registrado ya no existe.", ephemeral=True)
             return
-        
-        try:
-            overwrite = canal_juego.overwrites_for(ctx.guild.default_role)
-            overwrite.send_messages = False
-            await canal_juego.set_permissions(ctx.guild.default_role, overwrite=overwrite)
-        except:
-            pass
 
-        await ctx.respond(f":city_dusk: El día ha terminado. El canal {canal_juego.mention} ha sido bloqueado.", ephemeral=False)
+        if "rol_jugador" not in datos[server_id]:
+            await ctx.respond("⚠️ No se ha registrado un rol de jugador.", ephemeral=True)
+            return
+
+        rol_jugadores_id = datos[server_id].get("rol_jugador")
+        rol_jugadores = ctx.guild.get_role(rol_jugadores_id)
+        
+        # Bloquear a @everyone
+        await canal_juego.set_permissions(ctx.guild.default_role, send_messages=False)
+
+        # Bloquear al rol de jugadores
+        await canal_juego.set_permissions(rol_jugadores, send_messages=False)
+
+        await ctx.respond(f":city_dusk: El día ha terminado. El canal {canal_juego.mention} ha sido bloqueado.")
+
 
     @discord.slash_command(description="Lanza un dado de X cantidad de caras. (Por defecto: 6 caras)")
     async def dado(self, ctx, caras: int = 6):
@@ -672,6 +801,34 @@ class Votaciones(commands.Cog):
         dado_final = random.choice([dado1, dado2, dado3])
 
         await ctx.respond(f"🎲 Rueda el dado de {caras} caras y cae un... **{dado_final}**")
+
+    @discord.slash_command(description="Elige un usuario al azar entre los que tienen un rol específico.")
+    @option("rol", discord.Role, description="Rol del que se elegirá un usuario al azar")
+    async def ruleta_jugadores(self, ctx, rol: discord.Role):
+
+        # Obtener todos los miembros del servidor que tengan el rol
+        miembros = [m for m in ctx.guild.members if rol in m.roles]
+
+        if not miembros:
+            await ctx.respond(f"⚠️ No hay usuarios con el rol {rol.mention}.")
+            return
+        
+        elegido = random.choice(miembros)
+        await ctx.respond(f":game_die: El usuario elegido al azar fue: **{elegido.mention}**")
+
+    @discord.slash_command(name="choose",description="Elige una opción al azar entre varias que escribas.")
+    @option("opciones",str,description="Escribe varias opciones separadas por espacios.",required=True)
+    async def choose(self, ctx, opciones: str):
+        # Dividir las opciones por espacios
+        lista = opciones.split()
+
+        if len(lista) < 2:
+            await ctx.respond("⚠️ Debes escribir al menos **dos opciones**.")
+            return
+
+        elegido = random.choice(lista)
+        await ctx.respond(f"🎲 La opción elegida al azar es: **{elegido}**")
+
 
     @discord.slash_command(description="(MOD) Necesitas saber cómo funciona el bot? Empieza por acá.")
     @discord.default_permissions(administrator=True)
@@ -703,7 +860,8 @@ class Votaciones(commands.Cog):
                 "- Si un `jugador` es linchado, este perderá su rol y pasará a tener rol de `muerto`.\n"
                 "- Los usuarios `muertos` no se tendrán en cuenta para el cálculo de votos al linchar.\n"
                 "- Si necesitas, puedes cambiar el valor del voto de un jugador en específico, o también cuántos votos hacen falta para linchar a alguien (menos votos o más votos).\n"
-                "- También puedes usar el bot para las fases de día y noche. Estos cambian los permisos del canal para que los usuarios no puedan seguir enviando mensajes durante la noche. Al iniciar el día, se limpian los votos del día anterior y se restauran los permisos.\n"
+                "- También puedes usar el bot para las fases de día y noche. Estos cambian los permisos del canal durante la noche. Al iniciar el día, se limpian los votos del día anterior y se restauran los permisos.\n"
+                "- Incluye un comando para que los jugadores puedan votar y terminar el día antes, en caso de que no puedan llegar a un acuerdo.\n"
             ),
             inline=False
         )
@@ -712,13 +870,14 @@ class Votaciones(commands.Cog):
         embed.add_field(
             name="🧩 Flujo del juego",
             value=(
-                ":one: Crea los canales y roles en el servidor de Discord."
+                ":one: Crea los canales y roles en el servidor de Discord.\n"
                 ":two: Configura canales y roles con el bot.\n"
                 ":three: Inicia el día con `/fase_iniciar dia`.\n"
                 ":four: Los jugadores debaten y luego votan con (`/votar`).\n"
                 ":five: Si alguien alcanza la mayoría → linchamiento automático.\n"
                 ":six: Cierra el día con `/fase_terminar_dia`.\n"
                 ":seven: Inicia la noche con `/fase_iniciar noche`.\n"
+                "Alternativamente, los jugadores pueden usar el comando `/votar_terminar_dia_antes` si están de acuerdo en que no pueden llegar a un consenso sobre a quién linchar.\n"
             ),
             inline=False
         )
@@ -754,7 +913,8 @@ class Votaciones(commands.Cog):
             value=(
                 "`/set_valor_voto_jugador @jugador peso` — Cambia cuánto vale el voto del jugador.\n"
                 "`/set_vida_jugador @jugador offset` — Cambia cuántos votos necesita para ser linchado.\n"
-                "`/status_jugadores` — Muestra todos los jugadores, pesos y 'vidas' configuradas.\n"
+                "`/status_jugadores` — Muestra todos los jugadores, valor de los votos y 'vidas' configuradas.\n"
+                "`/reset_votosadicionales_y_vida ` — Resetea la configuración de todos los jugadores en cuanto a 'valor de los votos' y 'vidas'.\n"
             ),
             inline=False
         )
@@ -809,10 +969,12 @@ class Votaciones(commands.Cog):
         embed.add_field(
             name="💡 Notas",
             value=(
-                "- Los El `valor de los votos` no se puede configurar para ser menor que 1.\n"
+                "- El `valor de los votos` puede configurarse como 0 en caso de que sea necesario que un jugador no pueda votar.\n"
                 "- La `vida` puede ser **positiva o negativa**, pero que no sea menor a la cantidad de jugadores porque puede romper el juego.\n"
-                "- La configuración se guarda con el bot, se mantiene en caso de que se caiga.\n"
+                "- La configuración se guarda con el bot, se mantiene en caso de que este se desconecte.\n"
                 "- Hay un comando de `/dado` para lanzar un dado de entre 2 y 100 caras.\n"
+                "- Hay un comando de `/ruleta` para elegir a un jugador al azar de entre los jugadores vivos.\n"
+                "- Hay un comando de `/choose` para elegir al azar una de las opciones ofrecidas.\n"
                 "- Solo los administradores pueden ver y usar los comandos que dicen `(MOD)` en la descripción."
             ),
             inline=False
@@ -820,6 +982,37 @@ class Votaciones(commands.Cog):
 
         await ctx.respond(embed=embed, ephemeral=False)
         pass
+
+    @discord.slash_command(description="(MOD) Borra toda la configuración de pesos y thresholds del servidor actual.")
+    @discord.default_permissions(administrator=True)
+    async def reset_votosadicionales_y_vida(self, ctx):
+        datos = cargar_json(config_file)
+        server_id = str(ctx.guild.id)
+
+        if server_id not in datos:
+            await ctx.respond("⚠️ Este servidor no tiene configuraciones registradas.", ephemeral=True)
+            return
+
+        # Verificar si hay algo que borrar
+        tiene_pesos = "weights" in datos[server_id] and datos[server_id]["weights"]
+        tiene_thresholds = "thresholds" in datos[server_id] and datos[server_id]["thresholds"]
+
+        if not tiene_pesos and not tiene_thresholds:
+            await ctx.respond("ℹ️ No hay pesos ni thresholds configurados en este servidor.", ephemeral=True)
+            return
+
+        # Eliminar solo esas secciones
+        datos[server_id]["weights"] = {}
+        datos[server_id]["thresholds"] = {}
+
+        guardar_json(config_file, datos)
+
+        await ctx.respond(
+            "🧹 **Pesos y thresholds eliminados correctamente.**\n"
+            "Todos los jugadores vuelven a valores por defecto.",
+            ephemeral=False
+        )
+
 
     @discord.slash_command(description="(MOD) Elimina toda la configuración del servidor.")
     @discord.default_permissions(administrator=True)
@@ -866,7 +1059,6 @@ class Votaciones(commands.Cog):
 
         view = ConfirmarReset(ctx.author)
         await ctx.respond("⚠️ ¿Estás seguro de que quieres **eliminar toda la configuración** del servidor?\nEsta acción no se puede deshacer.", view=view, ephemeral=True)
-
 
 # --- Setup del cog ---
 def setup(bot):
